@@ -148,7 +148,7 @@ def parse(String description) {
     log.debug "parse('${description}')"
 }
 
-// Implementation of capability.refreshauth
+// Implementation of capability.refresh
 def refresh() {
     log.debug "refresh()"
     poll()
