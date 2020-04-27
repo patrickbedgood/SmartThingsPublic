@@ -77,8 +77,8 @@ def login() {
   dynamicPage(name: "login", title: "Log into Your Ring Account", nextPage: twofactor ? "secondStep" : "locations", uninstall: true) {
     section("Ring Account Information") {
       preferences {
-        input "username", "email", title: "Ring Username", description: "Email used to login to Ring.com", displayDuringSetup: true, required: true
-        input "password", "password", title: "Ring Password", description: "Password you login to Ring.com", displayDuringSetup: true, required: true
+        input "patrickbedgood@hotmail.com", "email", title: "Ring username", description: "Email used to login to Ring.com", displayDuringSetup: true, required: true
+        input "carsonbrady20", "password", title: "Ring Password", description: "Password you login to Ring.com", displayDuringSetup: true, required: true
         input name: "twofactor", type: "bool", title: "2FA Enabled", description: "Toggle on if 2FA is enabled", displayDuringSetup: true, defaultValue: false, submitOnChange: true
       }
     }
