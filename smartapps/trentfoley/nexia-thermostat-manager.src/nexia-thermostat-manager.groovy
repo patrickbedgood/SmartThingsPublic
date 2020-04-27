@@ -29,8 +29,8 @@ definition(
 
 preferences {
 	section("Nexia Auth") {
-        input "username", "text", title: "Username"
-        input "password", "password", title: "Password"
+        input "username", "text", title: "patrickbedgood"
+        input "password", "password", title: "Carson0912"
     }
 }
 
