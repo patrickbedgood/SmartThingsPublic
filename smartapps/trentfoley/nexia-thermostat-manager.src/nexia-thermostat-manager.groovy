@@ -226,7 +226,7 @@ private refreshAuthToken() {
                 requestContentType: 'application/x-www-form-urlencoded',
                 headers: defaultHeaders,
                 body: [
-                    'utf8': '✓',
+                    'utf8': 'âœ“',
                     'authenticity_token': authenticityToken,
                     'login': settings.username,
                     'password': settings.password
