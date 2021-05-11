@@ -31,6 +31,7 @@ preferences {
     section("Nexia Auth") {
         input "username", "text", title: "Username"
         input "password", "password", title: "Password"
+	input "schedule", "enum", title: "Update Frequency", options:["Every 1 minute", "Every 5 minutes", "Every 10 minutes", "Every 15 minutes", "Every 30 minutes", "Every 1 hour", "Every 3 hours"]
     }
 }
 
@@ -38,19 +39,39 @@ def getChildNamespace() { "trentfoley" }
 def getChildName() { "Nexia Thermostat" }
 def getServerUrl() { "https://www.mynexia.com" }
 
+private debugEvent(message, displayEvent = false) {
+    def results = [
+        name: "debug",
+        descriptionText: message,
+        displayed: displayEvent
+    ]
+    log.debug "${results}"
+    sendEvent(results)
+}
+
+private errorEvent(message, displayEvent = true) {
+    def results = [
+        name: "error",
+        descriptionText: message,
+        displayed: displayEvent
+    ]
+    log.error "${results}"
+    sendEvent(results)
+}
+
 def installed() {
-    log.debug("installed()")
+    debugEvent("installed()")
     initialize()
 }
 
 def updated() {
-    log.debug("updated()")
+    debugEvent("updated()")
     unsubscribe()
     initialize()
 }
 
 def initialize() {
-    log.debug("initialize()")
+    debugEvent("initialize() update frequency ${settings.schedule}")
     
     // Ensure authenticated
     refreshAuthToken()
@@ -62,25 +83,25 @@ def initialize() {
         headers: defaultHeaders
     ]
 
+    debugEvent("Nexia Home Request Parameters: ${homeParams}")
+
     try {
         httpGet(homeParams) { homeResp ->
-        	def respData = homeResp.data[0]
-        	
             // html / body / div id=footer-wrapper / div id=content / div id=content_sidebar / nav / ul / li / a id=climate_link
             // Recursive search for climate/index link.  Should be more robust to Nexia DOM changes
-            respData.children().each{
+            homeResp.data[0].children().each{
                 searchForClimate(it)
             }
         }
     }
-    catch(e) {
-        log.error("Caught exception determining thermostats path", e)
+    catch(Exception e) {
+        errorEvent("Caught exception determining thermostats path: ${e}")
     }
     
     // Get list of thermostats and ensure child devices
     requestThermostats { thermostatsResp ->
         def devices = thermostatsResp.data.collect { stat ->
-            log.debug("Found thermostat with ID: ${stat.id}")
+            debugEvent("Found thermostat with ID: ${stat.id}")
             
             //Check for Multiple Zones
             def dni = getDeviceNetworkId(stat.id)
@@ -95,25 +116,75 @@ def initialize() {
                 dni = getDeviceNetworkId(stat.id)
                 device = addMultipleDevices(dni, stat.name)
             }
-            device.initialize()
+
             return device
         }
 
-        log.debug("Discovered ${devices.size()} thermostats")
+        debugEvent("Discovered ${devices.size()} thermostats")
+        
+        //devices.each { it.refresh() }
     }
+    //insert scheduler for refresh
+    switch(settings.schedule) {
+        case "Every 1 minute":
+            runEvery1Minute(scheduleRun)
+            break
+        case "Every 5 minutes":
+            runEvery5Minutes(scheduleRun)
+            break
+        case "Every 10 minutes":
+            runEvery10Minutes(scheduleRun)
+            break
+        case "Every 15 minutes":
+            runEvery15Minutes(scheduleRun)
+            break
+        case "Every 30 minutes":
+            runEvery30Minutes(scheduleRun)
+            break
+        case "Every 1 hour":
+            runEvery1Hour(scheduleRun)
+            break
+        case "Every 3 hours":
+            runEvery3Hours(scheduleRun)
+            break
+        default:
+            runEvery3Hours(scheduleRun)
+    }
+ 
 }
+
+private def addMultipleDevices(dni, statname) {
+    def device = getChildDevice(dni)
+    if(!device) {
+        device = addChildDevice(childNamespace, childName, dni, null, [ label: "${childName} (${statname})" ])
+        debugEvent("Created ${device.displayName} with device network id: ${dni}")
+    } else {
+        debugEvent("Found already existing ${device.displayName} with device network id: ${dni}")
+    }
+    device.refresh()
+   
+    return device
+}
+
+def scheduleRun() {
+    def children = getChildDevices()
+    debugEvent("Scheduled run for ${children.size()} devices")
+    children.each { child ->
+        child.poll()	
+   }
+} 
+
 
 private searchForClimate(httpNode) {
     if(httpNode != null && !(httpNode instanceof String)) {
-        def href = httpNode.attributes()["href"]
-        if(href != null) {
-            if(href.matches("/houses/(?i).*climate"))
+        if(httpNode.attributes()["href"] != null) {
+            if(httpNode.attributes()["href"].matches("(?i).*climate"))
             {
-                state.thermostatsPath = href.replace("/climate", "/xxl_thermostats")
-                state.zonesPath = href.replace("/climate", "/xxl_zones")
-                log.debug("state.thermostatsPath = ${state.thermostatsPath}; state.zonesPath = ${state.zonesPath}")
+                state.thermostatsPath = httpNode.attributes()["href"].replace("climate", "xxl_thermostats")
+                state.zonesPath = httpNode.attributes()["href"].replace("climate", "xxl_zones")
+                debugEvent("ThermostatsPath = ${state.thermostatsPath}")
             }
-        }
+            }
         if(httpNode.children() != null) {
             httpNode.children().each {
                 if(it!=null)
@@ -123,42 +194,17 @@ private searchForClimate(httpNode) {
     }
 }
 
-private def addMultipleDevices(dni, statname) {
-    def device = getChildDevice(dni)
-    if(!device) {
-        device = addChildDevice(childNamespace, childName, dni, null, [ label: "${childName} (${statname})" ])
-        log.debug("Created ${device.displayName} with device network id: ${dni}")
-    } else {
-        log.debug("Found already existing ${device.displayName} with device network id: ${dni}")
-    }
-    return device
-}
-
-private refreshCsrfToken(resp) {
-    def respData = resp.data[0]
-
-    // Get CSRF token from response
-    // head / <meta name="csrf-token" content="***" />
-    respData.children[0].children().each {
-        if (it.attributes()["name"] == "csrf-token") {
-            state.csrfToken = it.attributes()["content"]
-            log.debug("state.csrfToken = ${state.csrfToken}")
-        }
-    }
-}
-
 private searchForAuthToken(httpNode) {
     if(httpNode != null && !(httpNode instanceof String)) {
-        if (httpNode.attributes()["name"] != null) {
-            if(httpNode.attributes()["name"]=="authenticity_token") {
+        if(httpNode.attributes()["name"] != null) {
+            if(httpNode.attributes()["name"]=="authenticity_token")
+            {
                 state.AuthToken = httpNode.attributes()["value"]
-                log.debug("state.AuthToken = ${state.AuthToken}")
             }
-        }
-        
-        if (httpNode.children() != null) {
+            }
+        if(httpNode.children() != null) {
             httpNode.children().each {
-                if(it != null)
+                if(it!=null)
                     searchForAuthToken(it)
             }
         }
@@ -173,21 +219,38 @@ private updateCookies(groovyx.net.http.HttpResponseDecorator response) {
     response.getHeaders('Set-Cookie').each {
         def cookieValue = it.value.split(';')[0]
         def cookieName = cookieValue.split('=')[0]
+        // if (!state.cookies) { state.cookies = [:] }
+        
+        debugEvent("Updating cookie: ${cookieValue}")
+        
         state.cookies[(cookieName)] = cookieValue
-        log.debug("state.cookies[${cookieName}] = ${cookieValue}")
     }
 }
 
 def getDefaultHeaders() {
     def headers = [
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/json,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Encoding': 'gzip, deflate',
         'Accept-Language': 'en-US,en,q=0.8',
-        'Cache-Control': 'max-age=0',
+        'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.100 Safari/537.36',
-        'X-CSRF-Token': state.csrfToken,
-		'X-Requested-With': 'XMLHttpRequest'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.111 Safari/537.36'
+    ]
+
+    def cookieString = state.cookies?.collect { entry -> entry.value }?.join('; ');
+    if (cookieString) { headers.Cookie = cookieString }
+    return headers
+}
+
+def getDefaultHeadersCSRF() {
+    def headers = [
+        'Accept': 'text/html,application/xhtml+xml,application/json,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate',
+        'Accept-Language': 'en-US,en,q=0.8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-CSRF-Token': state.AuthToken,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.111 Safari/537.36'
     ]
 
     def cookieString = state.cookies?.collect { entry -> entry.value }?.join('; ');
@@ -196,7 +259,7 @@ def getDefaultHeaders() {
 }
 
 private refreshAuthToken() {
-    log.debug("refreshAuthToken()")
+    debugEvent("refreshAuthToken()")
 
     // Initialize / clear any existing cookies
     state.cookies = [:]
@@ -207,6 +270,8 @@ private refreshAuthToken() {
         path: "/login",
         headers: defaultHeaders
     ]
+
+    debugEvent("Login Params: ${loginParams}")
     
     try {
          httpGet(loginParams) { loginResp ->
@@ -217,7 +282,7 @@ private refreshAuthToken() {
             // Recursive search for authenticity token.  Should be more robust to Nexia DOM changes
             searchForAuthToken(loginResp.data[0])
             def authenticityToken = state.AuthToken
-            refreshCsrfToken(loginResp);
+            debugEvent("Authenticity Token: ${authenticityToken}")
             
             def sessionParams = [
                 method: 'POST',
@@ -226,35 +291,36 @@ private refreshAuthToken() {
                 requestContentType: 'application/x-www-form-urlencoded',
                 headers: defaultHeaders,
                 body: [
-                    'utf8': 'âœ“',
+                    'utf8': '✓',
                     'authenticity_token': authenticityToken,
                     'login': settings.username,
                     'password': settings.password
                 ]
             ]
 
+            debugEvent("Session Parameters: ${sessionParams}")
+
             httpPost(sessionParams) { sessionResp ->
-                if (sessionResp.status != 302) {
-                	log.error("Did not receive expected response status code.  Expected 302, actual ${sessionResp.status}")
-                }
+                if (sessionResp.status != 302) { throw new Exception("Did not receive expected response status code.  Expected 302, actual ${sessionResp.status}") }
                 updateCookies(sessionResp)
-                refreshCsrfToken(sessionResp);
             }
         }
     }
-    catch(e) {
-        log.error("Caught exception refreshing auth token", e)
+    catch(Exception e) {
+        errorEvent("Caught exception refreshing auth token: ${e}")
     }
 }
 
 private requestThermostats(Closure closure) {
-    log.debug("requestThermostats(${state.thermostatsPath})")
+    debugEvent("requestThermostats(${state.thermostatsPath})")
     
     def thermostatsParams = [
         uri: serverUrl,
         path: state.thermostatsPath,
         headers: defaultHeaders
     ]
+
+    debugEvent("Thermostat Params: ${thermostatsParams}")
     
     try {
         httpGet(thermostatsParams) { resp ->
@@ -264,23 +330,24 @@ private requestThermostats(Closure closure) {
                 refreshAuthToken()
                 requestThermostats(closure)
             } else {
-                log.error("Unexpected status while requesting thermostats: ${resp.status}")
+                throw new Exception("Unexpected status while requesting thermostats: ${resp.status}")
             }
         }
     }
-    catch(e) {
-        log.error("Caught exception requesting thermostats", e)
+    catch(Exception e) {
+        errorEvent("Caught exception requesting thermostats: ${e}")
     }
 }
 
 private requestThermostat(deviceNetworkId, Closure closure) {
-    log.debug("requestThermostat(${deviceNetworkId})")
+    debugEvent("Requesting ${deviceNetworkId}")
     requestThermostats { resp ->
         def stat = resp.data.find { it -> getDeviceNetworkId(it.id) == deviceNetworkId }
         if (!stat) {
-            log.error("Device connection removed? No data found for ${deviceNetworkId} after polling")
+                errorEvent("ERROR: Device connection removed? No data found for ${deviceNetworkId} after polling")
         } else {
-            closure(stat)
+                debugEvent("Thermostat request succeeded: ${stat}")
+                closure(stat)
         }
     }
 }
@@ -290,7 +357,7 @@ def pollChild(child) {
     //if zoned, take off zone id... performs a repetitive update due to zoning, fix later
     def deviceNetworkId = ((child.device.deviceNetworkId).split('_'))[0]
     def zonedBool = ((child.device.deviceNetworkId).split('_')).size()
-    log.debug("ZoneBool ${zonedBool} pollChild(${deviceNetworkId})")
+    debugEvent("ZoneBool ${zonedBool} pollChild(${deviceNetworkId})")
 
     def statData = [:]
 
@@ -331,53 +398,38 @@ def pollChild(child) {
 
 // updateType can be: "setpoints", "zone_mode"
 private updateZone(zone, updateType) {
-    log.debug("updateZone(${zone.id}, ${updateType})")
-    
-    zone.hold_time = zone.hold_time.toBigInteger()
-    
+    debugEvent("updateZone(${zone.id}, ${updateType})")
     def requestParams = [
         uri: serverUrl,
         path: "${state.zonesPath}/${zone.id}/${updateType}",
-        headers: defaultHeaders,
+        headers: defaultHeadersCSRF,
         body: zone
     ]
 
     httpPutJson(requestParams) { resp ->
         if (resp.status == 200) {
-            log.debug("Zone update suceeded")
+            debugEvent("Zone update suceeded")
         } else {
-        	log.error("Unexpected status while attempting to update zone: ${resp.status}")
-            
-            /*
-            def zoneJson = new org.json.JSONObject(zone).toString()
-            def interations = Math.ceil(zoneJson.length() / 1200.0)
-            for(int i = 0; i <= interations; i++) {
-            	def end = i * 1200 + 1200
-                if (zoneJson.length() < end) {
-                	end = zoneJson.length()
-                }
-                log.debug "${i}: ${zoneJson.substring(i * 1200, end)}"
-            }
-            */
+            throw new Exception("Unexpected status while attempting to update zone: ${resp.status}")
         }
     }
 }
 
 // updateType can be: "fan_mode"
 private updateThermostat(stat, updateType) {
-    log.debug("updateThermostat(${stat.id}, ${updateType})")
+    debugEvent("updateThermostat(${stat.id}, ${updateType})")
     def requestParams = [
         uri: serverUrl,
         path: "${state.thermostatsPath}/${stat.id}/${updateType}",
-        headers: defaultHeaders,
+        headers: defaultHeadersCSRF,
         body: stat
     ]
 
     httpPutJson(requestParams) { resp ->
         if (resp.status == 200) {
-            log.debug("Thermostat update suceeded")
+            debugEvent("Thermostat update suceeded")
         } else {
-            log.error("Unexpected status while attempting to update thermostat: ${resp.status} ${stat}")
+            throw new Exception("Unexpected status while attempting to update thermostat: ${resp.status}")
         }
     }
 }
@@ -385,7 +437,7 @@ private updateThermostat(stat, updateType) {
 def setHeatingSetpoint(child, degreesF) {
     def deviceNetworkId = ((child.device.deviceNetworkId).split('_'))[0]
     def zonedBool = ((child.device.deviceNetworkId).split('_')).size()
-    log.debug("setHeatingSetpoint(${deviceNetworkId}, ${degreesF})")
+    debugEvent("setHeatingSetpoint(${deviceNetworkId}, ${degreesF})")
     
     requestThermostat(deviceNetworkId) { stat ->
         def zone = stat.zones[0]
@@ -407,7 +459,7 @@ def setHeatingSetpoint(child, degreesF) {
 def setCoolingSetpoint(child, degreesF) {
     def deviceNetworkId = ((child.device.deviceNetworkId).split('_'))[0]
     def zonedBool = ((child.device.deviceNetworkId).split('_')).size()
-    log.debug("setCoolingSetpoint(${deviceNetworkId}, ${degreesF})")
+    debugEvent("setCoolingSetpoint(${deviceNetworkId}, ${degreesF})")
     
     requestThermostat(deviceNetworkId) { stat ->
         def zone = stat.zones[0]
@@ -429,7 +481,7 @@ def setCoolingSetpoint(child, degreesF) {
 def setThermostatMode(child, value) {
     def deviceNetworkId = ((child.device.deviceNetworkId).split('_'))[0]
     def zonedBool = ((child.device.deviceNetworkId).split('_')).size()
-    log.debug("setThermostatMode(${deviceNetworkId}, ${value})")
+    debugEvent("setThermostatMode(${deviceNetworkId}, ${value})")
     
     requestThermostat(deviceNetworkId) { stat ->
         def zone = stat.zones[0]
@@ -438,7 +490,6 @@ def setThermostatMode(child, value) {
             zone = stat.zones.find {it.id == zoneNetworkId.toInteger()}
         }
         zone.requested_zone_mode = value.toUpperCase()
-        zone.last_requested_zone_mode = value.toUpperCase()
         updateZone(zone, "zone_mode")
     }
 }
@@ -446,7 +497,7 @@ def setThermostatMode(child, value) {
 def setThermostatFanMode(child, value) {
     def deviceNetworkId = ((child.device.deviceNetworkId).split('_'))[0]
     def zonedBool = ((child.device.deviceNetworkId).split('_')).size()
-    log.debug("setThermostatFanMode(${deviceNetworkId}, ${value})")
+    debugEvent("setThermostatFanMode(${deviceNetworkId}, ${value})")
     
     requestThermostat(deviceNetworkId) { stat ->
         stat.fan_mode = value
